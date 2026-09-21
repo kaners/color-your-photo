@@ -325,6 +325,13 @@ async function runColorizationAlgorithm(
   await new Promise((r) => setTimeout(r, 50))
 
   for (let i = 0; i < d.length; i += 4) {
+    const pixelIndex = i / 4
+    const x = pixelIndex % width
+    const y = Math.floor(pixelIndex / width)
+    const relX = x / width
+    const relY = y / height
+    const distFromCenter = Math.sqrt((relX - 0.5) ** 2 + (relY - 0.5) ** 2)
+
     const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]
     const norm = lum / 255
 
@@ -333,69 +340,110 @@ async function runColorizationAlgorithm(
     let nb = lum
 
     switch (filterId) {
-      case "natural":
-        if (norm > 0.75) {
-          const factor = (norm - 0.75) / 0.25
-          nr = lum * (1 - factor * (isUltra ? 0.06 : 0.08))
-          ng = lum * (1 + factor * (isUltra ? 0.06 : 0.04))
-          nb = lum * (1 + factor * (isUltra ? 0.26 : 0.22))
-        } else if (norm > 0.3) {
-          const midFactor = Math.sin(((norm - 0.3) / 0.45) * Math.PI)
-          nr = lum + midFactor * (isUltra ? 44 : 38)
-          ng = lum + midFactor * (isUltra ? 19 : 16)
-          nb = lum - midFactor * (isUltra ? 16 : 14)
-        } else {
-          nr = lum * 1.08
-          ng = lum * 0.98
-          nb = lum * 0.92
+      case "natural": {
+        // 1. Crisp clean neutral whites (NO yellow cast on clothes/teeth/paper):
+        if (norm > 0.82) {
+          nr = lum * 0.99
+          ng = lum * 0.99
+          nb = lum * 1.01
         }
-        break
-
-      case "vibrant":
-        if (norm > 0.65) {
-          nr = lum * 0.95
-          ng = lum * 1.08
-          nb = lum * 1.35
-        } else if (norm > 0.25) {
-          const factor = Math.sin(((norm - 0.25) / 0.4) * Math.PI)
-          nr = lum + factor * (isUltra ? 58 : 50)
-          ng = lum + factor * (isUltra ? 34 : 28)
-          nb = lum - factor * (isUltra ? 12 : 10)
-        } else {
-          nr = lum * 1.15
-          ng = lum * 0.9
+        // 2. Upper sky & daylight background (natural atmospheric sky cyan/blue):
+        else if (relY < 0.42 && norm > 0.52) {
+          const skyStrength = ((0.42 - relY) / 0.42) * ((norm - 0.52) / 0.48)
+          nr = lum * (1 - skyStrength * 0.14)
+          ng = lum * (1 + skyStrength * 0.04)
+          nb = lum * (1 + skyStrength * 0.35) + skyStrength * 18
+        }
+        // 3. Realistic Lifelike Human Skin Tones (peachy rose, NOT yellow!):
+        else if (norm >= 0.32 && norm <= 0.82) {
+          const skinCurve = Math.sin(((norm - 0.32) / 0.5) * Math.PI)
+          const centerWeight = Math.max(0, 1 - distFromCenter * 1.3)
+          nr = lum + skinCurve * (isUltra ? 38 : 32) + centerWeight * 8
+          ng = lum + skinCurve * (isUltra ? 8 : 6)
+          nb = lum - skinCurve * (isUltra ? 16 : 14) + centerWeight * 4
+        }
+        // 4. Lower environment / ambient ground:
+        else if (relY > 0.55 && norm < 0.6) {
+          const earthWeight = (relY - 0.55) * 1.8
+          nr = lum + earthWeight * 6
+          ng = lum + earthWeight * 14
+          nb = lum - earthWeight * 10
+        }
+        // 5. Deep Shadows & Hair (rich cool ebony, never yellow):
+        else {
+          nr = lum * 0.96
+          ng = lum * 0.95
           nb = lum * 1.05
         }
         break
+      }
 
-      case "vintage":
-        nr = lum * 1.22 + 10
-        ng = lum * 1.05 + 4
-        nb = lum * 0.82 - 6
-        if (norm < 0.25) {
-          nr = clamp(nr + 12)
-          ng = clamp(ng + 8)
-          nb = clamp(nb + 15)
+      case "vibrant": {
+        if (norm > 0.85) {
+          nr = lum
+          ng = lum
+          nb = lum * 1.02
+        } else if (relY < 0.45 && norm > 0.5) {
+          const skyStrength = ((0.45 - relY) / 0.45) * ((norm - 0.5) / 0.5)
+          nr = lum * (1 - skyStrength * 0.18)
+          ng = lum * (1 + skyStrength * 0.06)
+          nb = lum * (1 + skyStrength * 0.42) + skyStrength * 24
+        } else if (norm >= 0.28 && norm <= 0.82) {
+          const curve = Math.sin(((norm - 0.28) / 0.54) * Math.PI)
+          nr = lum + curve * (isUltra ? 48 : 42)
+          ng = lum + curve * (isUltra ? 14 : 10)
+          nb = lum - curve * (isUltra ? 18 : 14)
+        } else {
+          nr = lum * 0.94
+          ng = lum * 0.95
+          nb = lum * 1.08
         }
         break
+      }
 
-      case "cool":
-        nr = lum * 0.82 - 8
-        ng = lum * 1.04 + 2
-        nb = lum * 1.3 + (isUltra ? 22 : 18)
+      case "cool": {
+        // Cinematic Hollywood Teal & Orange
+        if (norm > 0.4) {
+          const skin = Math.sin(((norm - 0.4) / 0.6) * Math.PI)
+          nr = lum + skin * 32
+          ng = lum + skin * 8
+          nb = lum - skin * 12
+        } else {
+          nr = lum * 0.82 - 6
+          ng = lum * 1.02 + 4
+          nb = lum * 1.32 + 18
+        }
         break
+      }
 
-      case "warm":
-        nr = lum * 1.3 + (isUltra ? 26 : 22)
-        ng = lum * 1.08 + 10
-        nb = lum * 0.72 - 12
+      case "vintage": {
+        // Classic 1950s Kodachrome
+        nr = lum * 1.18 + 12
+        ng = lum * 1.02 + 6
+        nb = lum * 0.88 - 4
+        if (norm < 0.3) {
+          nr = clamp(nr + 8)
+          ng = clamp(ng + 4)
+          nb = clamp(nb + 12)
+        }
         break
+      }
 
-      case "sepia":
+      case "warm": {
+        // Golden Sunset Radiance
+        nr = lum * 1.25 + 24
+        ng = lum * 1.06 + 8
+        nb = lum * 0.78 - 14
+        break
+      }
+
+      case "sepia": {
+        // Traditional Archival Sepia
         nr = lum * 1.15 + 20
         ng = lum * 0.95 + 12
         nb = lum * 0.72 + 2
         break
+      }
     }
 
     d[i] = clamp(nr)
@@ -537,6 +585,7 @@ export default function AIPhotoColorizer() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
   const [isSigningIn, setIsSigningIn] = useState(false)
+  const [saveModalOpen, setSaveModalOpen] = useState(false)
 
   const handleSignIn = useCallback(async () => {
     setIsSigningIn(true)
@@ -654,14 +703,41 @@ export default function AIPhotoColorizer() {
     if (rawColorizedImage) setCurrentImage(rawColorizedImage)
   }
 
-  const downloadImage = () => {
+  const downloadImage = async () => {
     if (!currentImage) return
-    const link = document.createElement("a")
-    link.href = currentImage
-    link.download = `colorized-photo-${selectedColorFilter}${hasUltraPass ? "-ULTRA-4K" : ""}.jpg`
-    document.body.appendChild(link)
-    link.click()
-    document.body.removeChild(link)
+    const filename = `colorized-photo-${selectedColorFilter}${hasUltraPass ? "-ULTRA-4K" : ""}.jpg`
+
+    try {
+      const res = await fetch(currentImage)
+      const blob = await res.blob()
+      const file = new File([blob], filename, { type: "image/jpeg" })
+
+      if (typeof navigator !== "undefined" && navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: "Colorized Photo",
+          })
+          return
+        } catch (e: any) {
+          if (e.name === "AbortError") return
+        }
+      }
+
+      const blobUrl = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = blobUrl
+      link.download = filename
+      link.target = "_blank"
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000)
+    } catch {
+      // Fallback
+    }
+
+    setSaveModalOpen(true)
   }
 
   const shareImage = async () => {
@@ -1165,6 +1241,59 @@ export default function AIPhotoColorizer() {
               <Share2 className="w-4 h-4 mr-1.5" />
               Share
             </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Save Photo Modal for Mobile & Web */}
+      {saveModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-sm w-full overflow-hidden shadow-2xl space-y-3 p-4">
+            <div className="flex items-center justify-between pb-1 border-b border-gray-100">
+              <h3 className="font-bold text-sm text-gray-900 flex items-center gap-1.5">
+                <Download className="w-4 h-4 text-emerald-600" />
+                حفظ الصورة (Save Photo)
+              </h3>
+              <Button variant="ghost" size="icon" onClick={() => setSaveModalOpen(false)} className="h-7 w-7 text-gray-400 hover:text-gray-700">
+                ✕
+              </Button>
+            </div>
+
+            <div className="rounded-xl overflow-hidden bg-gray-950 aspect-square relative shadow-inner">
+              {currentImage && (
+                <img src={currentImage} alt="Colorized Result" className="w-full h-full object-contain" />
+              )}
+            </div>
+
+            <div className="bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl p-3 text-xs space-y-1">
+              <p className="font-bold flex items-center gap-1">
+                📱 لحفظ الصورة في هاتفك:
+              </p>
+              <p className="text-[11px] text-emerald-800 leading-relaxed">
+                اضغط <strong>بإصبعك مطولاً (Long Press)</strong> على الصورة بالأعلى ثم اختر <strong>"حفظ الصورة في الاستوديو"</strong> (Save Image).
+              </p>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              {currentImage && (
+                <a
+                  href={currentImage}
+                  download={`colorized-photo-${selectedColorFilter}${hasUltraPass ? "-ULTRA-4K" : ""}.jpg`}
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs py-2.5 rounded-xl flex items-center justify-center gap-1.5 shadow-md shadow-emerald-200"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  تحميل مباشر
+                </a>
+              )}
+              <Button
+                onClick={shareImage}
+                variant="outline"
+                className="border-gray-200 text-gray-700 hover:bg-gray-50 text-xs py-2.5 rounded-xl"
+              >
+                <Share2 className="w-3.5 h-3.5 mr-1" />
+                مشاركة
+              </Button>
+            </div>
           </div>
         </div>
       )}
