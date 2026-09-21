@@ -92,22 +92,39 @@ function loadPiSDKScript(): Promise<void> {
 // In-memory session token store
 let inMemorySessionToken: string | null = null
 
-async function authenticatePi(): Promise<PiUser> {
+async function getPi(): Promise<any> {
+  if (typeof window === "undefined") return null
+  if (window.Pi) return window.Pi
+
   await loadPiSDKScript()
 
-  if (typeof window !== "undefined" && window.Pi) {
+  // Poll for window.Pi to ensure Pi Desktop / Pi Browser webview is ready
+  for (let i = 0; i < 50; i++) {
+    if (window.Pi) return window.Pi
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  return window.Pi || null
+}
+
+async function authenticatePi(): Promise<PiUser | null> {
+  const Pi = await getPi()
+
+  if (Pi) {
     try {
+      console.log("[Pi Auth] Initializing Pi SDK v2.0...")
       // STEP 1 - Await Pi.init({ version: "2.0" }) fully without sandbox parameter
-      await window.Pi.init({ version: "2.0" })
+      await Pi.init({ version: "2.0" })
 
       function onIncompletePaymentFound(payment: any) {
         console.log("[Pi SDK] Incomplete payment found:", payment)
       }
 
+      console.log("[Pi Auth] Calling Pi.authenticate...")
       // Call Pi.authenticate(["username"], onIncompletePaymentFound)
-      const auth = await window.Pi.authenticate(["username"], onIncompletePaymentFound)
+      const auth = await Pi.authenticate(["username"], onIncompletePaymentFound)
       const accessToken = auth.accessToken
 
+      console.log("[Pi Auth] Exchanging accessToken with App Studio backend...")
       // STEP 2 - Exchange that accessToken with App Studio
       const response = await fetch(
         "https://backend.appstudio-u7cm9zhmha0ruwv8.piappengine.com/pi/auth/v1/login",
@@ -120,11 +137,11 @@ async function authenticatePi(): Promise<PiUser> {
 
       if (response.ok) {
         const data = await response.json()
-        // Keep the sessionToken in memory
         inMemorySessionToken = data.sessionToken
         if (typeof window !== "undefined" && window.sessionStorage) {
           window.sessionStorage.setItem("pi_session_token", data.sessionToken)
         }
+        console.log("[Pi Auth] Verified by App Studio:", data.user)
         // App Studio checks the token against Pi Platform: only trust the returned user
         return {
           uid: data.user.uid,
@@ -132,16 +149,19 @@ async function authenticatePi(): Promise<PiUser> {
           accessToken: data.sessionToken,
         }
       } else {
-        console.error("[Pi Auth] App Studio exchange returned error:", response.status, response.statusText)
+        const err = await response.text()
+        console.error("[Pi Auth] App Studio exchange returned error:", response.status, err)
       }
     } catch (e) {
-      console.warn("[Pi Auth] Authentication error or running outside Pi Browser:", e)
+      console.warn("[Pi Auth] Authentication error:", e)
     }
+  } else {
+    console.log("[Pi Auth] Pi SDK not available on window.")
   }
 
-  // Fallback for standard browsers outside Pi Browser (Dev/Demo mode)
-  return { uid: "pioneer-guest", username: "Pioneer_4709" }
+  return null
 }
+
 
 
 function requestPayment(
@@ -474,10 +494,24 @@ export default function AIPhotoColorizer() {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const cameraInputRef = useRef<HTMLInputElement>(null)
+  const [isSigningIn, setIsSigningIn] = useState(false)
+
+  const handleSignIn = useCallback(async () => {
+    setIsSigningIn(true)
+    try {
+      const user = await authenticatePi()
+      if (user) {
+        setPioneer(user)
+      }
+    } finally {
+      setIsSigningIn(false)
+    }
+  }, [])
 
   useEffect(() => {
-    authenticatePi(true).then((user) => setPioneer(user))
-  }, [])
+    handleSignIn()
+  }, [handleSignIn])
+
 
   const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -654,11 +688,21 @@ export default function AIPhotoColorizer() {
           </div>
 
           <div className="flex items-center gap-2">
-            {pioneer && (
+            {pioneer ? (
               <div className="flex items-center gap-1.5 px-2.5 py-1 bg-purple-50 border border-purple-200/80 rounded-full text-xs text-purple-900 font-medium">
                 <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                 <span>@{pioneer.username}</span>
               </div>
+            ) : (
+              <Button
+                size="sm"
+                onClick={handleSignIn}
+                disabled={isSigningIn}
+                className="bg-purple-600 hover:bg-purple-700 text-white text-xs h-7 px-2.5 shadow-sm rounded-lg"
+              >
+                <Coins className="w-3 h-3 mr-1" />
+                {isSigningIn ? "Signing in..." : "Sign in with Pi"}
+              </Button>
             )}
             {currentImage && (
               <Button onClick={startOver} variant="ghost" size="icon" className="h-8 w-8 text-gray-500 hover:text-purple-600">
@@ -668,6 +712,7 @@ export default function AIPhotoColorizer() {
           </div>
         </div>
       </header>
+
 
       {paymentNotice && (
         <div className="max-w-md mx-auto px-4 mt-2">
