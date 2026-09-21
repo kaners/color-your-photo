@@ -341,39 +341,25 @@ async function runColorizationAlgorithm(
 
     switch (filterId) {
       case "natural": {
-        // 1. Crisp clean neutral whites (NO yellow cast on clothes/teeth/paper):
-        if (norm > 0.82) {
+        // 1. Crisp clean neutral whites (NO yellow cast on clothes/hair/paper):
+        if (norm > 0.80) {
           nr = lum * 0.99
           ng = lum * 0.99
           nb = lum * 1.01
         }
-        // 2. Upper sky & daylight background (natural atmospheric sky cyan/blue):
-        else if (relY < 0.42 && norm > 0.52) {
-          const skyStrength = ((0.42 - relY) / 0.42) * ((norm - 0.52) / 0.48)
-          nr = lum * (1 - skyStrength * 0.14)
-          ng = lum * (1 + skyStrength * 0.04)
-          nb = lum * (1 + skyStrength * 0.35) + skyStrength * 18
+        // 2. Realistic Lifelike Human Skin Tones (balanced, centered on face):
+        else if (norm >= 0.35 && norm <= 0.80) {
+          const skinCurve = Math.sin(((norm - 0.35) / 0.45) * Math.PI)
+          const centerWeight = Math.max(0, 1 - distFromCenter * 1.5)
+          nr = lum + skinCurve * (isUltra ? 28 : 22) * (0.6 + centerWeight * 0.4)
+          ng = lum + skinCurve * (isUltra ? 6 : 4)
+          nb = lum - skinCurve * (isUltra ? 12 : 8) * (0.6 + centerWeight * 0.4)
         }
-        // 3. Realistic Lifelike Human Skin Tones (peachy rose, NOT yellow!):
-        else if (norm >= 0.32 && norm <= 0.82) {
-          const skinCurve = Math.sin(((norm - 0.32) / 0.5) * Math.PI)
-          const centerWeight = Math.max(0, 1 - distFromCenter * 1.3)
-          nr = lum + skinCurve * (isUltra ? 38 : 32) + centerWeight * 8
-          ng = lum + skinCurve * (isUltra ? 8 : 6)
-          nb = lum - skinCurve * (isUltra ? 16 : 14) + centerWeight * 4
-        }
-        // 4. Lower environment / ambient ground:
-        else if (relY > 0.55 && norm < 0.6) {
-          const earthWeight = (relY - 0.55) * 1.8
-          nr = lum + earthWeight * 6
-          ng = lum + earthWeight * 14
-          nb = lum - earthWeight * 10
-        }
-        // 5. Deep Shadows & Hair (rich cool ebony, never yellow):
+        // 3. Deep Shadows & Hair (rich cool ebony, never yellow):
         else {
-          nr = lum * 0.96
-          ng = lum * 0.95
-          nb = lum * 1.05
+          nr = lum * 0.97
+          ng = lum * 0.97
+          nb = lum * 1.03
         }
         break
       }
@@ -648,21 +634,58 @@ export default function AIPhotoColorizer() {
     if (!uploadedImage) return
     const isUltra = overrideUltra !== undefined ? overrideUltra : hasUltraPass
     setIsProcessing(true)
-    setProgress(10)
-    setStatusText(isUltra ? "Initializing 4K Ultra HD processing & Smart Sharpness..." : "Preparing image...")
+    setProgress(15)
+    setStatusText("Connecting to Deep AI Neural Colorizer...")
 
     try {
-      const result = await runColorizationAlgorithm(
-        uploadedImage,
-        selectedColorFilter,
-        (percent, stage) => {
-          setProgress(percent)
-          setStatusText(stage)
-        },
-        isUltra
-      )
-      setRawColorizedImage(result)
-      setCurrentImage(result)
+      // 1. Try Deep AI Serverless Colorizer (DDColor)
+      setProgress(35)
+      setStatusText("Deep Neural Network analyzing facial features & textures...")
+
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 45000)
+
+      let aiResultUrl: string | null = null
+      try {
+        const res = await fetch("/api/colorize", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: uploadedImage }),
+          signal: controller.signal,
+        })
+        clearTimeout(timeoutId)
+        if (res.ok) {
+          const data = await res.json()
+          if (data.success && data.image) {
+            aiResultUrl = data.image
+          }
+        }
+      } catch (apiErr) {
+        console.warn("Server AI colorization unavailable, falling back to smart local engine:", apiErr)
+      }
+
+      setProgress(75)
+      setStatusText(isUltra ? "Applying Ultra HD Smart Clarity & Detail..." : "Finalizing color synthesis...")
+
+      let finalResult = aiResultUrl
+
+      if (!finalResult) {
+        // Fallback to enhanced local client algorithm
+        finalResult = await runColorizationAlgorithm(
+          uploadedImage,
+          selectedColorFilter,
+          (percent, stage) => {
+            setProgress(Math.max(50, percent))
+            setStatusText(stage)
+          },
+          isUltra
+        )
+      }
+
+      setProgress(100)
+      setStatusText("Complete!")
+      setRawColorizedImage(finalResult)
+      setCurrentImage(finalResult)
       setIsProcessing(false)
       setActiveTab("edit")
     } catch (error: any) {
