@@ -7,9 +7,9 @@ const _geist = Geist({ subsets: ["latin"] });
 const _geistMono = Geist_Mono({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: 'v0 App',
-  description: 'Created with v0',
-  generator: 'v0.app',
+  title: 'Color your Photo | Pi Network App',
+  description: 'Transform and colorize vintage black & white photos with AI on the Pi Network',
+  generator: 'Pi App Studio',
   icons: {
     icon: [
       {
@@ -36,6 +36,10 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        {/* Pi Network JavaScript SDK */}
+        <script src="https://sdk.minepi.com/pi-sdk.js"></script>
+      </head>
       <body className="font-sans antialiased">
         {children}
         {process.env.NODE_ENV === 'production' && <Analytics />}

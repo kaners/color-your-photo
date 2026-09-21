@@ -89,21 +89,60 @@ function loadPiSDKScript(): Promise<void> {
   })
 }
 
-async function authenticatePi(sandbox: boolean = true): Promise<PiUser> {
+// In-memory session token store
+let inMemorySessionToken: string | null = null
+
+async function authenticatePi(): Promise<PiUser> {
   await loadPiSDKScript()
+
   if (typeof window !== "undefined" && window.Pi) {
     try {
-      window.Pi.init({ version: "2.0", sandbox })
-      const auth = await window.Pi.authenticate(["username", "payments"], (payment) => {
-        console.log("[Pi SDK] Incomplete payment:", payment)
-      })
-      return { uid: auth.user.uid, username: auth.user.username, accessToken: auth.accessToken }
+      // STEP 1 - Await Pi.init({ version: "2.0" }) fully without sandbox parameter
+      await window.Pi.init({ version: "2.0" })
+
+      function onIncompletePaymentFound(payment: any) {
+        console.log("[Pi SDK] Incomplete payment found:", payment)
+      }
+
+      // Call Pi.authenticate(["username"], onIncompletePaymentFound)
+      const auth = await window.Pi.authenticate(["username"], onIncompletePaymentFound)
+      const accessToken = auth.accessToken
+
+      // STEP 2 - Exchange that accessToken with App Studio
+      const response = await fetch(
+        "https://backend.appstudio-u7cm9zhmha0ruwv8.piappengine.com/pi/auth/v1/login",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ accessToken }),
+        }
+      )
+
+      if (response.ok) {
+        const data = await response.json()
+        // Keep the sessionToken in memory
+        inMemorySessionToken = data.sessionToken
+        if (typeof window !== "undefined" && window.sessionStorage) {
+          window.sessionStorage.setItem("pi_session_token", data.sessionToken)
+        }
+        // App Studio checks the token against Pi Platform: only trust the returned user
+        return {
+          uid: data.user.uid,
+          username: data.user.username,
+          accessToken: data.sessionToken,
+        }
+      } else {
+        console.error("[Pi Auth] App Studio exchange returned error:", response.status, response.statusText)
+      }
     } catch (e) {
-      console.warn("Pi authentication skipped or denied", e)
+      console.warn("[Pi Auth] Authentication error or running outside Pi Browser:", e)
     }
   }
+
+  // Fallback for standard browsers outside Pi Browser (Dev/Demo mode)
   return { uid: "pioneer-guest", username: "Pioneer_4709" }
 }
+
 
 function requestPayment(
   data: PiPaymentData,
