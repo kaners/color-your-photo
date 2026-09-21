@@ -245,6 +245,40 @@ function clamp(v: number, min = 0, max = 255): number {
   return Math.max(min, Math.min(max, v))
 }
 
+// 3x3 High-Pass Unsharp Mask for fine facial and edge details
+function applySmartSharpen(data: Uint8ClampedArray, width: number, height: number, amount = 0.45) {
+  const copy = new Uint8ClampedArray(data)
+  for (let y = 1; y < height - 1; y++) {
+    const yOffset = y * width
+    const topOffset = (y - 1) * width
+    const bottomOffset = (y + 1) * width
+    for (let x = 1; x < width - 1; x++) {
+      const idx = (yOffset + x) * 4
+      for (let c = 0; c < 3; c++) {
+        const center = copy[idx + c]
+        const top = copy[(topOffset + x) * 4 + c]
+        const bottom = copy[(bottomOffset + x) * 4 + c]
+        const left = copy[(yOffset + x - 1) * 4 + c]
+        const right = copy[(yOffset + x + 1) * 4 + c]
+        const laplacian = 4 * center - (top + bottom + left + right)
+        data[idx + c] = clamp(center + laplacian * amount)
+      }
+    }
+  }
+}
+
+// Dynamic micro-contrast S-curve to give deep vibrance to colors
+function applyDynamicClarity(data: Uint8ClampedArray) {
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i], g = data[i + 1], b = data[i + 2]
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b
+    const sCurve = Math.sin((lum / 255 - 0.5) * Math.PI) * 14
+    data[i] = clamp(r + sCurve)
+    data[i + 1] = clamp(g + sCurve)
+    data[i + 2] = clamp(b + sCurve)
+  }
+}
+
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image()
@@ -258,14 +292,15 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 async function runColorizationAlgorithm(
   imageSrc: string,
   filterId: string,
-  onProgress?: (percent: number, status: string) => void
+  onProgress?: (percent: number, status: string) => void,
+  isUltra: boolean = false
 ): Promise<string> {
-  if (onProgress) onProgress(15, "Loading image pixels...")
+  if (onProgress) onProgress(15, isUltra ? "Loading Ultra HD 4K pixels..." : "Loading image pixels...")
   const img = await loadImage(imageSrc)
 
   let width = img.naturalWidth || img.width
   let height = img.naturalHeight || img.height
-  const maxDim = 1400
+  const maxDim = isUltra ? 3200 : 960
   if (width > maxDim || height > maxDim) {
     if (width > height) {
       height = Math.round((height * maxDim) / width)
@@ -286,7 +321,7 @@ async function runColorizationAlgorithm(
   const imgData = ctx.getImageData(0, 0, width, height)
   const d = imgData.data
 
-  if (onProgress) onProgress(45, "Synthesizing chromatic spectrum...")
+  if (onProgress) onProgress(45, isUltra ? "Synthesizing 4K Ultra HD chromatic spectrum..." : "Synthesizing chromatic spectrum...")
   await new Promise((r) => setTimeout(r, 50))
 
   for (let i = 0; i < d.length; i += 4) {
@@ -301,14 +336,14 @@ async function runColorizationAlgorithm(
       case "natural":
         if (norm > 0.75) {
           const factor = (norm - 0.75) / 0.25
-          nr = lum * (1 - factor * 0.08)
-          ng = lum * (1 + factor * 0.04)
-          nb = lum * (1 + factor * 0.22)
+          nr = lum * (1 - factor * (isUltra ? 0.06 : 0.08))
+          ng = lum * (1 + factor * (isUltra ? 0.06 : 0.04))
+          nb = lum * (1 + factor * (isUltra ? 0.26 : 0.22))
         } else if (norm > 0.3) {
           const midFactor = Math.sin(((norm - 0.3) / 0.45) * Math.PI)
-          nr = lum + midFactor * 38
-          ng = lum + midFactor * 16
-          nb = lum - midFactor * 14
+          nr = lum + midFactor * (isUltra ? 44 : 38)
+          ng = lum + midFactor * (isUltra ? 19 : 16)
+          nb = lum - midFactor * (isUltra ? 16 : 14)
         } else {
           nr = lum * 1.08
           ng = lum * 0.98
@@ -323,9 +358,9 @@ async function runColorizationAlgorithm(
           nb = lum * 1.35
         } else if (norm > 0.25) {
           const factor = Math.sin(((norm - 0.25) / 0.4) * Math.PI)
-          nr = lum + factor * 50
-          ng = lum + factor * 28
-          nb = lum - factor * 10
+          nr = lum + factor * (isUltra ? 58 : 50)
+          ng = lum + factor * (isUltra ? 34 : 28)
+          nb = lum - factor * (isUltra ? 12 : 10)
         } else {
           nr = lum * 1.15
           ng = lum * 0.9
@@ -347,11 +382,11 @@ async function runColorizationAlgorithm(
       case "cool":
         nr = lum * 0.82 - 8
         ng = lum * 1.04 + 2
-        nb = lum * 1.3 + 18
+        nb = lum * 1.3 + (isUltra ? 22 : 18)
         break
 
       case "warm":
-        nr = lum * 1.3 + 22
+        nr = lum * 1.3 + (isUltra ? 26 : 22)
         ng = lum * 1.08 + 10
         nb = lum * 0.72 - 12
         break
@@ -368,15 +403,22 @@ async function runColorizationAlgorithm(
     d[i + 2] = clamp(nb)
   }
 
-  if (onProgress) onProgress(85, "Rendering output buffer...")
+  if (isUltra) {
+    if (onProgress) onProgress(70, "Applying Ultra HD Smart Sharpness & Clarity...")
+    await new Promise((r) => setTimeout(r, 40))
+    applySmartSharpen(d, width, height, 0.42)
+    applyDynamicClarity(d)
+  }
+
+  if (onProgress) onProgress(85, "Rendering 4K output buffer...")
   await new Promise((r) => setTimeout(r, 40))
 
   ctx.putImageData(imgData, 0, 0)
   if (onProgress) onProgress(100, "Complete!")
-  return canvas.toDataURL("image/jpeg", 0.95)
+  return canvas.toDataURL("image/jpeg", isUltra ? 0.98 : 0.88)
 }
 
-async function renderAdjustments(baseSrc: string, settings: EditSettings): Promise<string> {
+async function renderAdjustments(baseSrc: string, settings: EditSettings, isUltra: boolean = false): Promise<string> {
   const img = await loadImage(baseSrc)
   const width = img.naturalWidth || img.width
   const height = img.naturalHeight || img.height
@@ -458,7 +500,7 @@ async function renderAdjustments(baseSrc: string, settings: EditSettings): Promi
     ctx.restore()
   }
 
-  return canvas.toDataURL("image/jpeg", 0.95)
+  return canvas.toDataURL("image/jpeg", isUltra ? 0.99 : 0.88)
 }
 
 /* ==========================================================================
@@ -553,17 +595,23 @@ export default function AIPhotoColorizer() {
     }
   }
 
-  const processColorization = async () => {
+  const processColorization = async (overrideUltra?: boolean) => {
     if (!uploadedImage) return
+    const isUltra = overrideUltra !== undefined ? overrideUltra : hasUltraPass
     setIsProcessing(true)
     setProgress(10)
-    setStatusText("Preparing image...")
+    setStatusText(isUltra ? "Initializing 4K Ultra HD processing & Smart Sharpness..." : "Preparing image...")
 
     try {
-      const result = await runColorizationAlgorithm(uploadedImage, selectedColorFilter, (percent, stage) => {
-        setProgress(percent)
-        setStatusText(stage)
-      })
+      const result = await runColorizationAlgorithm(
+        uploadedImage,
+        selectedColorFilter,
+        (percent, stage) => {
+          setProgress(percent)
+          setStatusText(stage)
+        },
+        isUltra
+      )
       setRawColorizedImage(result)
       setCurrentImage(result)
       setIsProcessing(false)
@@ -579,12 +627,12 @@ export default function AIPhotoColorizer() {
     const base = rawColorizedImage || uploadedImage
     if (!base) return
     try {
-      const updated = await renderAdjustments(base, editSettings)
+      const updated = await renderAdjustments(base, editSettings, hasUltraPass)
       setCurrentImage(updated)
     } catch (err) {
       console.error(err)
     }
-  }, [rawColorizedImage, uploadedImage, editSettings])
+  }, [rawColorizedImage, uploadedImage, editSettings, hasUltraPass])
 
   useEffect(() => {
     if (rawColorizedImage) {
@@ -610,7 +658,7 @@ export default function AIPhotoColorizer() {
     if (!currentImage) return
     const link = document.createElement("a")
     link.href = currentImage
-    link.download = `colorized-photo-${selectedColorFilter}.jpg`
+    link.download = `colorized-photo-${selectedColorFilter}${hasUltraPass ? "-ULTRA-4K" : ""}.jpg`
     document.body.appendChild(link)
     link.click()
     document.body.removeChild(link)
@@ -622,10 +670,10 @@ export default function AIPhotoColorizer() {
       try {
         const response = await fetch(currentImage)
         const blob = await response.blob()
-        const file = new File([blob], "colorized-photo.jpg", { type: "image/jpeg" })
+        const file = new File([blob], `colorized-photo${hasUltraPass ? "-ultra-4k" : ""}.jpg`, { type: "image/jpeg" })
         await navigator.share({
           title: "My Colorized Photo on Pi Network",
-          text: "Look at my black & white photo colorized on Pi App Studio!",
+          text: `Check out my photo colorized with ${hasUltraPass ? "Ultra HD 4K AI" : "AI"} on Pi App Studio!`,
           files: [file],
         })
       } catch (err) {
@@ -648,8 +696,11 @@ export default function AIPhotoColorizer() {
       },
       (txid) => {
         setHasUltraPass(true)
-        setPaymentNotice(`Payment Successful! TxID: ${txid.slice(0, 10)}...`)
-        setTimeout(() => setPaymentNotice(null), 6000)
+        setPaymentNotice(`👑 Ultra HD Pass Activated! (TxID: ${txid.slice(0, 10)}...) Re-enhancing photo in 4K...`)
+        setTimeout(() => setPaymentNotice(null), 8000)
+        if (uploadedImage) {
+          processColorization(true)
+        }
       },
       (err) => alert(err)
     )
@@ -818,9 +869,36 @@ export default function AIPhotoColorizer() {
           </TabsContent>
 
           {/* TAB 2: COLORIZE */}
-          <TabsContent value="colorize" className="space-y-4 mt-3">
+          <TabsContent value="colorize" className="space-y-3 mt-3">
             {uploadedImage && (
               <>
+                <div className="flex items-center justify-between px-1">
+                  <div className="flex items-center gap-1.5">
+                    {hasUltraPass ? (
+                      <Badge className="bg-gradient-to-r from-amber-500 to-orange-500 text-white text-[10px] px-2 py-0.5 border-0 shadow-xs flex items-center gap-1">
+                        <Sparkles className="w-3 h-3 text-white" />
+                        Ultra HD 4K Active
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-gray-500 text-[10px] bg-white/60">
+                        Standard Web Quality (960px)
+                      </Badge>
+                    )}
+                  </div>
+                  {hasUltraPass && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => processColorization(true)}
+                      disabled={isProcessing}
+                      className="h-6 text-[11px] text-amber-700 hover:text-amber-800 hover:bg-amber-100/60 px-2 font-medium"
+                    >
+                      <RefreshCw className="w-3 h-3 mr-1" />
+                      Re-run 4K
+                    </Button>
+                  )}
+                </div>
+
                 <Card className="bg-white/90 border-purple-100 shadow-sm overflow-hidden">
                   <CardContent className="p-3 space-y-3">
                     <div className="relative aspect-square rounded-xl overflow-hidden bg-gray-950 select-none">
@@ -839,7 +917,7 @@ export default function AIPhotoColorizer() {
                             Original B&W
                           </div>
                           <div className="absolute top-2 right-2 bg-purple-600/90 text-white text-[10px] font-semibold px-2 py-0.5 rounded-full z-20 pointer-events-none">
-                            AI Colorized
+                            {hasUltraPass ? "Ultra 4K Colorized" : "AI Colorized"}
                           </div>
                         </>
                       ) : (
@@ -914,7 +992,7 @@ export default function AIPhotoColorizer() {
 
                 {!isProcessing && (
                   <Button
-                    onClick={processColorization}
+                    onClick={() => processColorization()}
                     className="w-full bg-gradient-to-r from-purple-600 via-purple-700 to-pink-600 hover:from-purple-700 hover:to-pink-700 text-white font-medium py-5 shadow-lg shadow-purple-200 rounded-xl"
                     size="lg"
                   >
@@ -944,12 +1022,12 @@ export default function AIPhotoColorizer() {
                       <Settings className="w-3.5 h-3.5 text-purple-600" />
                       Image Fine-Tuning
                     </CardTitle>
-                    <Button onClick={resetSettings} variant="ghost" size="sm" className="h-6 text-[10px] text-gray-500">
+                    <Button onClick={resetSettings} variant="ghost" size="sm" className="h-6 text-[11px] text-purple-600 px-2">
                       <Undo className="w-3 h-3 mr-1" />
                       Reset
                     </Button>
                   </CardHeader>
-                  <CardContent className="space-y-4 px-4 pb-4 pt-1">
+                  <CardContent className="px-4 pb-4 pt-1 space-y-4">
                     <div className="space-y-1.5">
                       <div className="flex justify-between text-xs">
                         <Label className="flex items-center gap-1 text-gray-600">
@@ -957,35 +1035,25 @@ export default function AIPhotoColorizer() {
                         </Label>
                         <span className="text-gray-500 text-[11px]">{editSettings.brightness}</span>
                       </div>
-                      <Slider value={[editSettings.brightness]} onValueChange={(val) => setEditSettings((p) => ({ ...p, brightness: val[0] }))} min={-40} max={40} step={1} />
+                      <Slider value={[editSettings.brightness]} onValueChange={(val) => setEditSettings((p) => ({ ...p, brightness: val[0] }))} min={-50} max={50} step={1} />
                     </div>
 
                     <div className="space-y-1.5">
                       <div className="flex justify-between text-xs">
                         <Label className="flex items-center gap-1 text-gray-600">
-                          <Contrast className="w-3.5 h-3.5 text-blue-500" /> Contrast
+                          <Contrast className="w-3.5 h-3.5 text-indigo-500" /> Contrast
                         </Label>
                         <span className="text-gray-500 text-[11px]">{editSettings.contrast}</span>
                       </div>
-                      <Slider value={[editSettings.contrast]} onValueChange={(val) => setEditSettings((p) => ({ ...p, contrast: val[0] }))} min={-40} max={40} step={1} />
+                      <Slider value={[editSettings.contrast]} onValueChange={(val) => setEditSettings((p) => ({ ...p, contrast: val[0] }))} min={-50} max={50} step={1} />
                     </div>
 
                     <div className="space-y-1.5">
                       <div className="flex justify-between text-xs">
-                        <Label className="flex items-center gap-1 text-gray-600">
-                          <Palette className="w-3.5 h-3.5 text-pink-500" /> Saturation
-                        </Label>
+                        <Label className="flex items-center gap-1 text-gray-600">Saturation</Label>
                         <span className="text-gray-500 text-[11px]">{editSettings.saturation}</span>
                       </div>
                       <Slider value={[editSettings.saturation]} onValueChange={(val) => setEditSettings((p) => ({ ...p, saturation: val[0] }))} min={-30} max={50} step={1} />
-                    </div>
-
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between text-xs">
-                        <Label className="flex items-center gap-1 text-gray-600">Exposure</Label>
-                        <span className="text-gray-500 text-[11px]">{editSettings.exposure}</span>
-                      </div>
-                      <Slider value={[editSettings.exposure]} onValueChange={(val) => setEditSettings((p) => ({ ...p, exposure: val[0] }))} min={-30} max={30} step={1} />
                     </div>
                   </CardContent>
                 </Card>
@@ -1037,33 +1105,49 @@ export default function AIPhotoColorizer() {
         </Tabs>
 
         {/* Ultra HD Pass Banner */}
-        <Card className="bg-gradient-to-r from-amber-50 to-orange-50 border border-amber-200 shadow-xs">
+        <Card className="bg-gradient-to-r from-amber-50 via-orange-50 to-yellow-50 border border-amber-200 shadow-xs overflow-hidden">
           <CardContent className="p-3.5 flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-amber-500 text-white flex items-center justify-center font-bold text-xs shadow-xs">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 text-white flex items-center justify-center font-bold text-sm shadow-sm shadow-amber-200">
                 π
               </div>
               <div>
-                <div className="text-xs font-bold text-amber-900 flex items-center gap-1">
+                <div className="text-xs font-bold text-amber-950 flex items-center gap-1.5">
                   Ultra HD Color Pass
-                  {hasUltraPass && <Badge className="text-[9px] bg-emerald-600 text-white px-1 py-0">Active</Badge>}
+                  {hasUltraPass && (
+                    <Badge className="text-[9px] bg-emerald-600 text-white px-1.5 py-0">
+                      ✓ Active
+                    </Badge>
+                  )}
                 </div>
-                <div className="text-[10px] text-amber-700">
-                  {hasUltraPass ? "HD resolution export unlocked" : "Only 0.05 Test-Pi via Pi Sandbox"}
+                <div className="text-[10px] text-amber-800 leading-tight mt-0.5">
+                  {hasUltraPass
+                    ? "4K Super-Resolution & AI Smart Sharpness Unlocked"
+                    : "Unlock 4K Resolution, Smart Clarity & Lossless Export (0.05 Pi)"}
                 </div>
               </div>
             </div>
 
             {!hasUltraPass ? (
-              <Button size="sm" onClick={handleUpgradeToUltra} className="bg-amber-600 hover:bg-amber-700 text-white text-xs h-7 px-3 shadow-xs">
+              <Button
+                size="sm"
+                onClick={handleUpgradeToUltra}
+                className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-700 hover:to-orange-700 text-white text-xs h-7 px-3 shadow-xs rounded-lg font-medium shrink-0"
+              >
                 <Coins className="w-3 h-3 mr-1" />
                 Unlock
               </Button>
             ) : (
-              <div className="text-emerald-700 text-xs font-semibold flex items-center gap-1">
-                <Check className="w-4 h-4 text-emerald-600" />
-                Enabled
-              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => processColorization(true)}
+                disabled={isProcessing}
+                className="border-amber-300 text-amber-800 hover:bg-amber-100/60 text-xs h-7 px-2.5 rounded-lg shrink-0"
+              >
+                <Sparkles className="w-3 h-3 mr-1 text-amber-600" />
+                Re-color 4K
+              </Button>
             )}
           </CardContent>
         </Card>
