@@ -719,7 +719,7 @@ export default function AIPhotoColorizer() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-indigo-50/50 via-purple-50/40 to-pink-50/50 pb-28">
+    <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-gradient-to-br from-indigo-50/50 via-purple-50/40 to-pink-50/50 pb-28">
       {/* Top Header */}
       <header className="bg-white/90 backdrop-blur-md border-b border-purple-100 sticky top-0 z-30 shadow-sm">
         <div className="max-w-md mx-auto px-4 py-2.5 flex items-center justify-between">
